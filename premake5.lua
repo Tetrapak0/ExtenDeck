@@ -9,8 +9,9 @@ project "Deckadence"
     language "C++"
 
     files {"src/**.cpp", "include/**.hpp", "external/NativeFileDialogs-Extended/nfd_win.cpp", "external/ImGui/*", "external/Tetrapak0/*", "external/stb/*"}
-    includedirs {"include/"}
+    includedirs {"include/", "external/"}
     filter {"system:windows"}
+        includedirs {"external/freetype/"}
         flags {"multiprocessorcompile"}
         files {"resources/Deckadence.rc", "resources/**.ico", "resources/**.c"}
         vpaths {["resources"] = {"resources/**.rc", "resources/**.ico"}}

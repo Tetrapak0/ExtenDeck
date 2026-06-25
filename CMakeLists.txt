@@ -31,19 +31,7 @@ add_executable(Deckadence ${DxSrc}
                           ${CMAKE_CURRENT_LIST_DIR}/external/stb/stbi.c
                           ${CMAKE_CURRENT_LIST_DIR}/resources/icon.c
                           ${CMAKE_CURRENT_LIST_DIR}/resources/EnterIcon.c
-                          ${CMAKE_CURRENT_LIST_DIR}/resources/Deckadence.rc
-include/Config/ShortcutView.hpp
-include/GUI/ViewManager.hpp
-src/Config/ShortcutView.cpp
-include/Networking/Connection.hpp
-src/Client/ClientManager.cpp
-src/Config/ConfigManager.cpp
-include/Networking/Networking.hpp
-src/Networking/Networking.cpp
-include/Plugin/Plugin.hpp
-src/Plugin/Plugin.cpp
-include/Event/Event.hpp
-src/Event/Event.cpp)
+                          ${CMAKE_CURRENT_LIST_DIR}/resources/Deckadence.rc)
 set_property(TARGET Deckadence PROPERTY CXX_STANDARD 23)
 
 # must be ran with -DCMAKE_BUILD_TYPE=Debug
