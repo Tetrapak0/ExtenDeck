@@ -1,107 +1,191 @@
 #include "Config/Deckastore.hpp"
 #include "Config/Config.hpp"
-#include "GUI/DxWindow.hpp"
-#include "Server/DiscoveryService.hpp"
-#include "Server/Message.hpp"
+#include "Plugin/ApplicationPlugin.hpp"
+#include "SDK/GUIConstants.hpp"
+#include "Utilities/FileDialog.hpp"
+
+#include "ShortcutView/ShortcutViewPlugin.hpp"
+
+#include <fstream>
+
+namespace ExtenDeck {
+Deckastore::Deckastore() : pluginManager(eventBus, mode, status, running_tasks) {
+    applicationPlugin = pluginManager.registerPlugin(&applicationPluginDescriptor);
+    assert(applicationPlugin);
+
+    eventBus.registry.registerPrivateEventType("org.PoS.ExtenDeck.events.ClientConnected", sizeof(Event::EClientConnected),
+                                                ExtenDeckSDK::DxECEPAll, applicationPlugin->plugin, [](ExtenDeckSDK::EventBase* event){
+        new (event) Event::EClientConnected{};
+    });
+    eventBus.registry.registerEventType("org.PoS.ExtenDeck.events.ClientDisconnected",
+                                         sizeof(Event::EClientDisconnected), ExtenDeckSDK::DxECEPImmediate, [](ExtenDeckSDK::EventBase* event){
+        new (event) Event::EClientDisconnected{};
+    });
+    eventBus.registry.registerEventType("org.PoS.ExtenDeck.events.ClientDisconnectIssued", sizeof(Event::EClientDisconnectIssued),
+                                        (ExtenDeckSDK::CallbackExecutionPolicy)(ExtenDeckSDK::DxECEPWorkerThread | ExtenDeckSDK::DxECEPSubscriberThread),
+                                        [](ExtenDeckSDK::EventBase* event){
+        new (event) Event::EClientDisconnectIssued{};
+    });
+    eventBus.registry.registerEventType("org.PoS.ExtenDeck.events.ServerConnected", sizeof(Event::EServerConnected), 
+                                        ExtenDeckSDK::DxECEPAll, [](ExtenDeckSDK::EventBase* event){
+        new (event) Event::EServerConnected{};
+    }, [](ExtenDeckSDK::EventBase* event){
+        ((Event::EServerConnected*)event)->~EServerConnected();
+    });
+    eventBus.registry.registerEventType("org.PoS.ExtenDeck.events.ServerDisconnected",sizeof(Event::EServerDisconnected),
+                                        ExtenDeckSDK::DxECEPAll, [](ExtenDeckSDK::EventBase* event){
+        new (event) Event::EServerDisconnected{};
+    }, [](ExtenDeckSDK::EventBase* event){
+        ((Event::EServerDisconnected*)event)->~EServerDisconnected();
+    });
+
+    eventBus.registry.registerPrivateEventType("org.PoS.ExtenDeck.events.ServerFound", sizeof(Event::EServerFound),
+                                               ExtenDeckSDK::DxECEPAll, applicationPlugin->plugin, [](ExtenDeckSDK::EventBase* event){
+        new (event) Event::EServerFound{};
+    }, [](ExtenDeckSDK::EventBase* event){
+        ((Event::EServerFound*)event)->~EServerFound();
+    });
+    eventBus.registry.registerPrivateEventType("org.PoS.ExtenDeck.events.TextureReadyToBind", sizeof(Event::ETextureReadyToBind),
+                                           ExtenDeckSDK::DxECEPSubscriberThread, applicationPlugin->plugin, [](ExtenDeckSDK::EventBase* event){
+        new (event) Event::ETextureReadyToBind{};
+    });
+
+    pluginManager.registerPlugin(&ShortcutView::pluginDescriptor);
+}
 
 void Deckastore::reset() {
-    Deckastore& self = get();
-    self.status = status_t::Running;
-    self.mode = Deckadence::mode_t::Server;
-    self.discoverable = true;
-    self.port = 32018;
-    self.draw_properties = false;
-    self.draw_item_properties = -1;
-    self.draw_settings = false;
-    self.selected_client_id = 0;
-    self.clients.clear();
-    self.interfaces.clear();
-    self.type_registry.reset();
-    self.window.destroy();
-    self.config.clear();
+    Deckastore::get().~Deckastore();
+    new (&Deckastore::get()) Deckastore;
 }
 
-void Deckastore::erase_client(const uint64_t uuid) {
-    clients.erase(uuid);
+void Deckastore::set_mode(const modes _mode) {
+    std::lock_guard _lock(this->lock);
+    this->mode = _mode;
 }
-void Deckastore::set_mode(const Deckadence::mode_t mode) {
-    lock.lock();
-    this->mode = mode;
-    lock.unlock();
-}
-void Deckastore::set_port(uint16_t port) {
-    lock.lock();
-    this->port = port;
-    lock.unlock();
-}
-bool& Deckastore::get_discoverable_ref() {
-    return discoverable;
-}
+#ifdef _DEBUG
 void Deckastore::disable_sis() {
-    singleinstance = false;
+    singleInstance = false;
 }
 
-bool Deckastore::IsSingleInstanceEnforced() const {
-    return singleinstance;
+bool Deckastore::isSingleInstanceEnforced() const {
+    return singleInstance;
 }
-
-int Deckastore::create_window(const char* title, const Vec2<int>& size, const int fullscreen,
-                              const std::vector<std::pair<int, int>>& hints,
-                              const Vec2<int>& min_size, const Vec2<int>& max_size) {
-    assert(!window.get());
-    window.create(title, size, fullscreen, hints, min_size, max_size);
-    return window.get() ? 0 : -1;
-}
-void Deckastore::destroy_window() {
-    window.destroy();
-}
-
+#endif
 Deckastore& Deckastore::get() {
     static Deckastore self;
     return self;
 }
 
-void Deckastore::net_query_interfaces() {
-    vector<NetworkInterface> interfaces = query_interfaces();
-    // TODO: Implement hybrid copy; sockets are copied in case of change
-    this->interfaces = interfaces;
-}
-vector<NetworkInterface>& Deckastore::get_ifaces_ref() {
-    return this->interfaces;
+Client::Client* Deckastore::retrieve_current_client() {
+    return clientManager.retrieve_client(selected_client_id);
 }
 
-void Deckastore::set_discoverable(const bool d) {
-    lock.lock();
-    discoverable = d;
-    lock.unlock();
-}
-const bool& Deckastore::get_discoverable() const {
-    return discoverable;
+void Deckastore::drawSettings() {
+    static int mode = static_cast<int>(get_mode());
+    static bool discoverable = server.get_discoverable();
+    static int port = server.get_port();
+    if (!ImGui::IsPopupOpen("Settings")) {
+        ImGui::OpenPopup("Settings");
+        mode = static_cast<int>(get_mode());
+        discoverable = server.get_discoverable();
+        port = server.get_port();
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(480, 360));
+    if (ImGui::BeginPopupModal("Settings", nullptr, GUI::Constants::modalFlags)) {
+        ImGui::Text("Select device mode:");
+        ImGui::RadioButton("Server", &mode, 0);
+        ImGui::BeginDisabled(mode);
+        ImGui::SetCursorPosX(24);
+        ImGui::Checkbox("Make this server discoverable on my network", &discoverable);
+        ImGui::SetCursorPosX(24);
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Server port: ");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(256);
+        static constexpr unsigned short step = 1;
+        static constexpr unsigned short step_fast = 100;
+        ImGui::InputScalar("##port", ImGuiDataType_U16, &port, &step, &step_fast);
+        ImGui::EndDisabled();
+        ImGui::RadioButton("Client", &mode, 1);
+        ImGui::SetCursorPos(ImVec2(340, 326));
+        if (ImGui::Button("Cancel", ImVec2(64, 26))) {
+            mode = static_cast<int>(get_mode());
+            discoverable = server.get_discoverable();
+            port = server.get_port();
+            ImGui::CloseCurrentPopup();
+            settingsShown = false;
+        }
+        ImGui::SameLine();
+        if (mode == static_cast<int>(get_mode()) && port == server.get_port()) {
+            ImGui::BeginDisabled(discoverable == server.get_discoverable());
+            if (ImGui::Button("Apply", ImVec2(64, 26))) {
+                server.set_discoverable(discoverable);
+                fs::path dkd_dir = get_config_dir();
+                fs::create_directories(dkd_dir);
+                config["server"]["discoverable"] = discoverable;
+                std::ofstream writer(dkd_dir / "config.json");
+                writer << config.dump(4);
+                writer.close();
+                ImGui::CloseCurrentPopup();
+                settingsShown = false;
+            }
+            ImGui::EndDisabled();
+        } else if (ImGui::Button("Restart", ImVec2(64, 26))) {
+            config["mode"] = mode;
+            config["server"]["discoverable"] = discoverable;
+            config["server"]["port"] = port;
+            fs::path dkd_dir = get_config_dir();
+            fs::create_directories(dkd_dir);
+            std::ofstream writer(dkd_dir / "config.json");
+            writer << config.dump(4);
+            writer.close();
+            ImGui::CloseCurrentPopup();
+            set_status(statuses::Restart);
+            settingsShown = false;
+        }
+        ImGui::EndPopup();
+    }
 }
 
-Client& Deckastore::retrieve_client(const uint64_t uuid) {
-    return clients.at(uuid);
-}
-Client& Deckastore::retrieve_current_client() {
-    return retrieve_client(selected_client_id);
-}
+//int Deckastore::runSetup(); // Defined in Config/Setup.cpp
 
-Texture* Deckastore::create_texture(string name, fs::path path) {
-    auto [it, inserted] = this->textureStore.try_emplace(name, std::make_unique<Texture>(path));
-    
-    if (inserted)
-        return it->second.get();
-}
+int Deckastore::check_config(bool rerunSetup) {
+    fs::path dkd_dir = get_config_dir();
 
-Texture* Deckastore::create_texture(string name, const uint8_t* data, int size) {
-    auto [it, inserted] = this->textureStore.try_emplace(name, std::make_unique<Texture>(data, size));
+    if (!fs::exists(dkd_dir / "config.json") || rerunSetup) {
+        set_mode(modes::Undefined);
+        server.set_port(32018);
+        server.set_discoverable(true);
+        if (runSetup())
+            return -1;
+    }
 
-    if (inserted)
-        return it->second.get();
-}
+    std::ifstream reader(dkd_dir / "config.json");
+    config = json::parse(reader);
+    if (config.is_discarded())
+        return check_config(true);
+    reader.close();
 
-json& Deckastore::get_config() {
-    return this->config;
+    if (config.contains("mode") && config["mode"].is_number_unsigned()) {
+        modes mode = static_cast<modes>(config["mode"].get<uint64_t>());
+        set_mode(mode);
+        if (mode == modes::Server) {
+            if (config.contains("server") && config["server"].is_object()) {
+                if (config["server"].contains("discoverable") && config["server"]["discoverable"].is_boolean())
+                    server.set_discoverable(config["server"]["discoverable"]);
+                else
+                    return check_config(true);
+                if (config["server"].contains("port"))
+                    server.set_port(config["server"]["port"].get<uint16_t>());
+            } else {
+                return check_config(true);
+            }
+        }
+    } else {
+        return check_config(true);
+    }
+    return 0;
 }
 
 const uint64_t& Deckastore::get_selected_uuid() const {
@@ -112,67 +196,22 @@ void Deckastore::set_selected_uuid(const uint64_t uuid) {
     selected_client_id = uuid;
     lock.unlock();
 }
-const decltype(Deckastore::clients)& Deckastore::get_client_map() {
-    return clients;
-}
-bool Deckastore::client_exists(const uint64_t client) {
-    return clients.find(client) != clients.end();
-}
-void Deckastore::insert_client(uint64_t uuid, socket_t socket) {
-    lock.lock();
-    // clients.emplace(std::piecewise_construct,
-    //                 std::forward_as_tuple(uuid),
-    //                 std::forward_as_tuple(uuid, socket));
-    clients.try_emplace(uuid, uuid, socket);
-    if (selected_client_id == DX_INVALID_UUID)
-        selected_client_id = uuid;
-    lock.unlock();
-}
-// TODO: Move to destructor of Client. can't really right now
-void Deckastore::disconnect_client(const uint64_t uuid, const string& reason) {
-    lock.lock();
-    if (clients.find(uuid) == clients.end()) {
-        lock.unlock();
-        return;
-    }
-    Client& c = retrieve_client(uuid);
-    if (selected_client_id == c.get_uuid()) {
-        // TODO: Add offline config editor; when client not connected
-        draw_item_properties = -1;
-        draw_properties = false;
-        selected_client_id = DX_INVALID_UUID;
-    }
-    // this is allowed to fail, and it always will if the client disconnects itself
-    send(c.socket, string(string(1, (char)MessageType::Disconnect) + reason).c_str(), reason.length()+1, 0);
-    if (c.socket != NX_INVALID_SOCKET) {
-        nx_sock_close(c.socket);
-        c.socket = NX_INVALID_SOCKET;
-    }
-    if (c.get_nickname().empty())
-        printf("%llu disconnected.\n", c.get_uuid());
-    else
-       printf("%s disconnected.\n", c.get_nickname().c_str());
-    erase_client(uuid);
-    if (clients.size())
-        selected_client_id = clients.begin()->first;
-    lock.unlock();
-}
 
-void Deckastore::set_status(const status_t status) {
+void Deckastore::set_status(const statuses status) {
     lock.lock();
     this->status = status;
     lock.unlock();
 }
-const status_t& Deckastore::get_status() const {
+const statuses& Deckastore::get_status() const {
     return status;
 }
 
-Deckadence::mode_t Deckastore::get_mode() const {
+modes Deckastore::get_mode() const {
     return mode;
 }
 
-uint16_t Deckastore::get_port() const {
-    return port;
+bool Deckastore::isHeadless() const {
+    return headless;
 }
 
 const tasks& Deckastore::get_tasks() const {
@@ -183,4 +222,5 @@ void Deckastore::add_task(const tasks task) {
 }
 void Deckastore::remove_task(const tasks task) {
     running_tasks &= ~task;
+}
 }

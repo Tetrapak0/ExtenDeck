@@ -10,6 +10,10 @@
 
 #include "Utilities/FileDialog.hpp"
 
+#include <NativeFileDialogs-Extended/include/nfd.h>
+#include <NativeFileDialogs-Extended/include/nfd_glfw3.h>
+
+namespace ExtenDeck::Utilities {
 string nfd_open_image() {
     NFD_Init();
     const DxWindow& dxwindow = Deckastore::get().window;
@@ -83,4 +87,5 @@ string nfd_open_dir() {
     if (res != NFD_OKAY)
         return "";
     return out;
+}
 }

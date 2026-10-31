@@ -1,45 +1,51 @@
 #include "Server/DiscoveryService.hpp"
 #include "Client/DiscoveryListenerService.hpp"
 #include "Config/Deckastore.hpp"
+#include "Event/Event.hpp"
 
-mutex servers_lock;
+#include <print>
 
-vector<ServerInfo> servers;
-int selected_server = -1;
-
-void transcribe_server(string msg, ServerInfo& si) {
+namespace ExtenDeck {
+namespace Networking {
+ServerInfo::ServerInfo(string msg, uint64_t last_ping) : last_ping(last_ping), full(msg) {
+    if (msg.empty())
+        return;
     size_t at = std::find(msg.begin(), msg.end(), '@') - msg.begin();
     size_t sp = std::find(msg.begin(), msg.end(), '(') - msg.begin();
     size_t cl = std::find(msg.begin(), msg.end(), ':') - msg.begin();
-    si.username = msg.substr(0, at);
-    si.hostname = msg.substr(at+1, sp-at-2);
-    si.ipv4     = msg.substr(sp+1, cl-sp-1);
-    si.port     = strtol(msg.substr(cl+1, msg.length()-cl-2).c_str(), nullptr, 10);
+    username = msg.substr(0, at);
+    hostname = msg.substr(at+1, sp-at-2);
+    ipv4     = msg.substr(sp+1, cl-sp-1);
+    port     = strtol(msg.substr(cl+1, msg.length()-cl-2).c_str(), nullptr, 10);
 }
-void print_server(const ServerInfo& si) {
-    printf("Username:   %s\n", si.username.c_str());
-    printf("Hostname:   %s\n", si.hostname.c_str());
-    printf("IP address: %s\n", si.ipv4.c_str());
-    printf("Port:       %d\n", si.port);
+void ServerInfo::print() {
+    std::println("Username:   {}", username);
+    std::println("Hostname:   {}", hostname);
+    std::println("IP address: {}", ipv4);
+    std::println("Port:       {}", port);
+}
 }
 
+namespace Client {
 void start_listening() {
     Deckastore& dxstore = Deckastore::get();
     dxstore.add_task(tasks::Discovery);
-    const status_t& dxstatus = dxstore.get_status();
-    Client& dxclient = dxstore.retrieve_current_client();
+    const statuses& dxstatus = dxstore.get_status();
+    Client* dxclient = dxstore.retrieve_current_client();
 
-    vector<NetworkInterface>& interfaces = dxstore.get_ifaces_ref();
+    vector<Networking::NetworkInterface>& interfaces = dxstore.networkManager.get_interfaces();
 
-    struct sockaddr_in mcast_addr{};
+    sockaddr_in mcast_addr{};
     mcast_addr.sin_family = AF_INET;
-    mcast_addr.sin_addr.s_addr = inet_addr(MCAST_IP);
+    inet_pton(AF_INET, MCAST_IP, &mcast_addr.sin_addr.s_addr);
     mcast_addr.sin_port = htons(MCAST_PORT);
 
+    vector<pollfd> pollees;
+    pollees.reserve(interfaces.size());
     for (auto& iface : interfaces) {
         iface.discovery_sock = socket(AF_INET, SOCK_DGRAM, 0);
 
-#ifdef _DEBUG // Allow Multi instance
+#ifdef _DEBUG // Allow multiple instances
         int reuse = 1;
         setsockopt(iface.discovery_sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
     #ifndef _WIN32
@@ -47,79 +53,59 @@ void start_listening() {
     #endif
 #endif
 
-        struct sockaddr_in addr{};
+        sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         addr.sin_port = htons(MCAST_PORT);
-        struct ip_mreq mreq{};
-        mreq.imr_multiaddr.s_addr = inet_addr(MCAST_IP);
-        mreq.imr_interface.s_addr = inet_addr(iface.ipv4.to_string().c_str());
+        ip_mreq mreq{};
+        inet_pton(AF_INET, MCAST_IP, &mreq.imr_multiaddr.s_addr);
+        inet_pton(AF_INET, iface.ipv4.to_string().c_str(), &mreq.imr_interface.s_addr);
 
-        bind(iface.discovery_sock, (sockaddr*)&addr, sizeof(addr));
-        // int loop = 0;
-        // setsockopt(iface.sock, IPPROTO_IP, IP_MULTICAST_LOOP, (const char*)&loop, sizeof(loop));
-        setsockopt(iface.discovery_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char*)&mreq, sizeof(mreq));
-    }
-    char buf[BUFSIZE];
-    vector<pollfd> pollees(interfaces.size());
-    for (int i = 0; i < interfaces.size(); ++i) {
-        pollees[i].events = POLLIN;
-        pollees[i].fd = interfaces[i].discovery_sock;
-    }
-    while (dxclient.socket == NX_INVALID_SOCKET && dxstatus == status_t::Running) {
-        int pres = poll(pollees.data(), interfaces.size(), 2000);
-        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        if (!pres) {
-        } else if (pres == NX_SOCKET_ERROR) {
-            // TODO: error checking
-            break;
-        } else {
-            // TODO: we probably don't need sockets in the interfaces list
-            for (auto& p : pollees) {
-                if (p.revents) {
-                    socklen_t addrlen = sizeof(mcast_addr);
-                    int len = recvfrom(p.fd, buf, BUFSIZE, 0, (struct sockaddr*)&mcast_addr, &addrlen);
-                    if (len == NX_SOCKET_ERROR)
-                        len = 0;
-                    buf[len] = '\0';
-                    auto it = std::find_if(servers.begin(), servers.end(), [&buf](const ServerInfo& si){return si.full == buf;});
-                    if (it != servers.end()) {
-                        it->last_ping = now;
-                    } else {
-                        servers_lock.lock();
-                        printf("New server found: %s\n", buf);
-                        ServerInfo si;
-                        si.full = buf;
-                        si.last_ping = now;
-                        transcribe_server(buf, si);
-                        servers.push_back(si);
-                        servers_lock.unlock();
-                    }
-                    p.revents = 0;
-                }
-            }
+        if (bind(iface.discovery_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr))) {
+            nx_sock_close(iface.discovery_sock);
+            iface.discovery_sock = NX_INVALID_SOCKET;
+            continue;
         }
 
-        if (!servers.empty()) {
-            for (int i = 0; i < servers.size(); ++i) {
-                if (now - servers[i].last_ping > 5) {
-                    servers_lock.lock();
-                    if (selected_server == i) {
-                        selected_server = -1;
-                    }
-                    printf("%s timed out.\n", servers[i].full.c_str());
-                    servers.erase(servers.begin() + i);
-                    servers_lock.unlock();
-                }
-            }
+        setsockopt(iface.discovery_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq), sizeof(mreq));
+
+        pollees.emplace_back(iface.discovery_sock, POLLIN);
+    }
+    while (!dxclient->connection.isConnected() && dxstatus == statuses::Running) {
+        int pres = poll(pollees.data(), interfaces.size(), 2000);
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        if (!pres)
+            continue;
+        if (pres == NX_SOCKET_ERROR)
+            break;
+        for (auto& p : pollees) {
+            if (!p.revents)
+                continue;
+            char buf[BUFSIZE] = {};
+
+            socklen_t addrlen = sizeof(mcast_addr);
+            int res = recvfrom(p.fd, buf, BUFSIZE, 0, reinterpret_cast<sockaddr*>(&mcast_addr), &addrlen);
+            if (res == NX_SOCKET_ERROR)
+                continue;
+            buf[res] = '\0';
+
+            Networking::ServerInfo serverInfo(buf, now);
+            auto event = (Event::EServerFound*)dxstore.eventBus.registry
+                                                .createEvent(dxstore.eventBus.registry
+                                                             .findPrivateDescriptorByName("org.PoS.ExtenDeck.events.ServerFound",
+                                                                                          dxstore.applicationPlugin->plugin));
+            event->serverInfo = serverInfo;
+            dxstore.eventBus.postEvent(event);
+            dxstore.eventBus.registry.releaseEvent(event);
+            p.revents = 0;
         }
     }
 
     for (auto& iface : interfaces) {
         nx_sock_close(iface.discovery_sock);
+        iface.discovery_sock = NX_INVALID_SOCKET;
     }
-    servers_lock.lock();
-    servers.clear();
-    servers_lock.unlock();
     dxstore.remove_task(tasks::Discovery);
+}
+}
 }

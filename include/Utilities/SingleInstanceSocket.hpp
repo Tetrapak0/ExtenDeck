@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../../external/Tetrapak0/NexusSockets.h"
+#include <Tetrapak0/NexusSockets.h>
 
-#include "GUI/GUI.hpp"
-
+namespace ExtenDeck {
 int si_socket_init();
+}

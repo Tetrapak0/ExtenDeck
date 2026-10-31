@@ -4,4 +4,6 @@
 
 using std::string;
 
-string strip_spaces(string str);
+namespace ExtenDeck::Utilities {
+    string strip_spaces(string str);
+}

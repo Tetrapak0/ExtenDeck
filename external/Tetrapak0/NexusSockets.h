@@ -1,6 +1,18 @@
 #ifndef __NX_SOCK_H__
 #define __NX_SOCK_H__
 
+#if defined(_MSC_VER)
+  #define NXS_LITTLE_ENDIAN
+#elif defined(__BYTE_ORDER__)
+  #if defined(__ORDER_LITTLE_ENDIAN__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    #define NXS_LITTLE_ENDIAN
+  #else
+    #define NXS_BIG_ENDIAN
+  #endif
+#else
+  #error "Cannot to determine target endianness."
+#endif
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -68,7 +80,7 @@ typedef int socket_t;
 extern "C" {
 #endif
 
-unsigned long long recvn(int socket, void* out, unsigned long long len, int flags);
+unsigned long long recvn(socket_t socket, void* out, unsigned long long len, int flags);
 
 #ifdef __cplusplus
 }

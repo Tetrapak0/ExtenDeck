@@ -3,32 +3,32 @@
 #include "Client/Client.hpp"
 #include "Server/Server.hpp"
 #include "Utilities/SingleInstanceSocket.hpp"
+#include "SDK/GUIConstants.hpp"
 
 #include <thread>
 
-// TODO: Keep checking if config file has been changed and reload if it has been
-// TODO: Installer
-
-Deckadence::mode_t mode_selector(bool& multi_instance) {
+#ifdef _DEBUG
+namespace ExtenDeck {
+modes mode_selector(bool& multi_instance) {
     Deckastore& dxstore = Deckastore::get();
-    dxstore.create_window("Launch Deckadence", {256, 200}, 0, {{GLFW_RESIZABLE, GLFW_FALSE}});
+    dxstore.window.create("Launch ExtenDeck", {256, 200}, 0, {{GLFW_RESIZABLE, GLFW_FALSE}});
     DxWindow& dxwindow = dxstore.window;
 
-    gui_init_context();
+    GUI::init_context();
 
     ImGuiIO& io = ImGui::GetIO();
 
     int mode = 0;
 
     while (true) {
-        glfwWaitEventsTimeout(max_wait_time);
+        glfwWaitEventsTimeout(GUI::Constants::max_wait_time);
         if (glfwGetWindowAttrib(dxwindow.get(), GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(10);
             continue;
         }
 
         if (dxwindow.should_close()) {
-            mode = static_cast<int>(Deckadence::mode_t::Undefined);
+            mode = static_cast<int>(modes::Undefined);
             break;
         }
 
@@ -58,7 +58,7 @@ Deckadence::mode_t mode_selector(bool& multi_instance) {
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(64,26))) {
-            mode = static_cast<int>(Deckadence::mode_t::Undefined);
+            mode = static_cast<int>(modes::Undefined);
             ImGui::End();
             break;
         }
@@ -74,87 +74,96 @@ Deckadence::mode_t mode_selector(bool& multi_instance) {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
-    dxstore.destroy_window();
+    dxstore.window.destroy();
     glfwTerminate();
 
-    return static_cast<Deckadence::mode_t>(mode);
+    return static_cast<modes>(mode);
 }
+}
+#endif
+
+using namespace ExtenDeck;
 
 int main(int argc, char** argv) {
+    int ret = 0;
     setbuf(stdout, nullptr);
     setbuf(stderr, nullptr);
-    int ret = 0;
-    Deckastore& dxstore = Deckastore::get();
+
+#ifdef _WIN32
     if (nx_sock_init()) {
-    #ifdef _WIN32
         printf("Failed to initialize networking. WSAGetLastError(): %d\n", WSAGetLastError());
-    #else
-        printf("Failed to initialize networking: %s\n", strerror(errno));
-    #endif
         return -1;
     }
+#endif
 
-    dxstore.set_status(status_t::Restart);
+    bool headless = false;
+    for (int i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "-H"))
+            headless = true;
+    }
 #ifdef _DEBUG
     bool multi_instance = false;
-    Deckadence::mode_t mode = Deckadence::mode_t::Server;
-    bool override_mode = false;
+    modes mode = modes::Undefined;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-M"))
             multi_instance = true;
-        if (!strcmp(argv[i], "-S") && !override_mode) {
-            mode = Deckadence::mode_t::Server;
-            override_mode = true;
-        } else if (!strcmp(argv[i], "-C") && !override_mode) {
-            mode = Deckadence::mode_t::Client;
-            override_mode = true;
-        }
+        if (!strcmp(argv[i], "-S") && mode == modes::Undefined)
+            mode = modes::Server;
+        else if (!strcmp(argv[i], "-C") && mode == modes::Undefined)
+            mode = modes::Client;
     }
-    if (!override_mode) {
-        mode = mode_selector(multi_instance);
-        override_mode = true;
-    }
-    if (multi_instance || mode == Deckadence::mode_t::Undefined) {
-        Deckastore::get().disable_sis();
-        dxstore.set_status(status_t::Running);
-    }
-
-    if (mode == Deckadence::mode_t::Undefined)
-        dxstore.set_status(status_t::Done);
 #endif
-    std::thread t_si_ensurer(si_socket_init);
-
-    // wait for the single instance socket
-    while (dxstore.get_status() == status_t::Restart) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-
-    while (dxstore.status != status_t::Done) {
+    Deckastore& dxstore = Deckastore::get();
+    while (dxstore.status != statuses::Exiting) {
         Deckastore::reset();
-        if (check_config()) {
+        if (headless)
+            dxstore.headless = true;
+#ifdef _DEBUG
+        if (mode == modes::Undefined)
+            mode = mode_selector(multi_instance);
+        if (mode == modes::Undefined) {
+            nx_sock_cleanup();
+            return 0;
+        }
+        if (multi_instance)
+            Deckastore::get().disable_sis();
+#endif
+        // TODO: Why isnt this outside the loop
+        std::thread t_si_ensurer(si_socket_init);
+
+        // wait for the single instance socket
+        while (dxstore.get_status() == statuses::Starting)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        if (dxstore.check_config()) {
             ret = -1;
+            t_si_ensurer.join();
             break;
         }
 #ifdef _DEBUG
-        if (override_mode)
-            Deckastore::get().set_mode(mode);
+        Deckastore::get().set_mode(mode);
 #endif
-        // TODO: Should probably implement return value
-        dxstore.net_query_interfaces();
-        switch (static_cast<int>(dxstore.mode)) {
-            case static_cast<int>(Deckadence::mode_t::Server): {
-                ret = start_server_sequence();
+        // TODO: maybe move to constructor?
+        if (!dxstore.networkManager.query_interfaces()) {
+            ret = -1;
+            t_si_ensurer.join();
+            break;
+        }
+        switch (dxstore.mode) {
+            case modes::Server: {
+                ret = Server::run();
                 break;
-            } case static_cast<int>(Deckadence::mode_t::Client): {
-                ret = start_client_sequence();
+            } case modes::Client: {
+                ret = Client::run();
                 break;
             } default: {
                 ret = -1;
                 break;
             }
         }
+        t_si_ensurer.join();
     }
-    t_si_ensurer.join();
+    Deckastore::reset();
     nx_sock_cleanup();
     return ret;
 }

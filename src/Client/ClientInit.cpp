@@ -1,110 +1,52 @@
-#include "Config/Deckastore.hpp"
-#include "Config/Config.hpp"
 #include "Client/Client.hpp"
 #include "Client/DiscoveryListenerService.hpp"
-#include "Server/Message.hpp"
+#include "Config/Config.hpp"
+#include "Config/Deckastore.hpp"
+#include "SDK/SDK.h"
 
-#include <thread>
+#include <fstream>
 #include <string>
-#include <vector>
+#include <thread>
 
 using std::thread;
 using std::string;
-using std::vector;
 
+namespace ExtenDeck::Client {
 void begin_receiver_loop() {
     Deckastore& dxstore = Deckastore::get();
     dxstore.add_task(tasks::Client);
-    const status_t& dxstatus = dxstore.get_status();
-    Client& dxclient = dxstore.retrieve_current_client();
+    const statuses& dxstatus = dxstore.get_status();
+    Client* dxclient = dxstore.retrieve_current_client();
 
-    pollfd pole{dxclient.socket, POLLIN, 0};
-    do {
-        int res = poll(&pole, 1, 2000);
-        if (!res)
-            continue;
-        if (res == NX_SOCKET_ERROR)
-            break;
+    dxclient->communicate();
 
-        uint64_t header = 0;
-        dxclient.res = recvn(dxclient.socket, &header, sizeof(uint64_t), 0);
-        if (dxclient.res <= 0) {
-#ifdef _WIN32
-            printf("%d\n", WSAGetLastError());
-#else
-            printf("%s\n", strerror(errno));
-#endif
-            break;
-        }
-
-        uint32_t len  = ntohl(header >> 32);
-        uint32_t type = ntohl(header & 0xFFFFFFFF);
-
-        printf("Message size: %lu, type: %lu\n", len, type);
-
-        string buf(len, '\0');
-
-        dxclient.res = recvn(dxclient.socket, buf.data(), len, 0);
-        if (dxclient.res <= 0) {
-#ifdef _WIN32
-            printf("%d\n", WSAGetLastError());
-#else
-            printf("%s\n", strerror(errno));
-#endif
-            break;
-        }
-
-        // Thanks for runtime template dispatch, C++ committee
-        switch (static_cast<MessageType>(type)) {
-            case MessageType::Config: {
-                (void)Message<MessageType::Config>(buf, dxclient);
-                break;
-            } case MessageType::Disconnect: {
-                (void)Message<MessageType::Disconnect>(buf, dxclient);
-                break;
-            } case MessageType::Execute: {
-                (void)Message<MessageType::Execute>(buf, dxclient);
-                break;
-            } case MessageType::ThumbnailDelivery: {
-                (void)Message<MessageType::ThumbnailDelivery>(buf, dxclient);
-                break;
-            } default: {
-                // Look up plugin message types when we add plugin support.
-                // Pass to plugin's master event dispatch because no runtime
-                // template dispatch
-            }
-        }
-    } while (!static_cast<int>(dxstatus) && dxclient.res > 0 && dxclient.send_res > 0);
-    dxclient.res = 1;
-    dxclient.send_res = 1;
-    nx_sock_close(dxclient.socket);
-    dxclient.socket = NX_INVALID_SOCKET;
-    dxclient.get_current_profile_ref().root = &dxclient.get_current_profile_ref().items;
+    dxclient->connection = Networking::Connection(NX_INVALID_SOCKET);
+    ExtenDeckSDK::EventBase* event = dxstore.eventBus.registry.createEvent("org.PoS.ExtenDeck.events.ServerDisconnected");
+    dxstore.eventBus.postEvent(event);
+    dxstore.eventBus.registry.releaseEvent(event);
     dxstore.remove_task(tasks::Client);
 }
 
 void begin_client_loop() {
     Deckastore& dxstore = Deckastore::get();
-    const status_t& dxstatus = dxstore.get_status();
-    while (dxstatus == status_t::Running) {
-        if (dxstore.retrieve_current_client().socket == NX_INVALID_SOCKET) {
+    const statuses& dxstatus = dxstore.get_status();
+    while (dxstatus == statuses::Running) {
+        if (!dxstore.retrieve_current_client()->connection.isConnected())
             start_listening();
-        } else {
+        else
             begin_receiver_loop();
-        }
     }
 }
 
 uint64_t find_uuid() {
-    fs::path dkd_dir = get_cfg_dir();
+    fs::path dkd_dir = get_config_dir();
     fs::create_directories(dkd_dir);
     uint64_t uuid = generate_uuid();
     if (fs::exists(dkd_dir / "config.json")) {
         std::ifstream reader(dkd_dir / "config.json");
         json cfg = json::parse(reader);
         reader.close();
-        // TODO: JSON type checking
-        if (cfg.contains("uuid"))
+        if (cfg.contains("uuid") && cfg["uuid"].is_number_unsigned())
             return cfg["uuid"].get<uint64_t>();
         std::ofstream writer(dkd_dir / "config.json");
         cfg["uuid"] = uuid;
@@ -120,11 +62,29 @@ uint64_t find_uuid() {
     return uuid;
 }
 
-int start_client_sequence() {
+int run() {
     Deckastore& dxstore = Deckastore::get();
+    // HACK: // FIXME:
+#ifdef _DEBUG
+    if (dxstore.window.create("ExtenDeck", {1280, 720}, 0)) {
+#else
+    if (dxstore.window.create("ExtenDeck", {1280, 720}, 1)) {
+#endif
+        dxstore.set_status(statuses::Exiting);
+        return -1;
+    }
+
+    Event::ThreadLocalEventBus localEventBus(dxstore.eventBus);
+    std::unique_ptr<Event::EventBus::SubscriptionToken> textureReadyToBindToken;
+    textureReadyToBindToken = localEventBus.eventBus.subscribeToEvent(
+                                    dxstore.eventBus.registry.findPrivateDescriptorByName(
+                                        "org.PoS.ExtenDeck.events.TextureReadyToBind", dxstore.applicationPlugin->plugin),
+                                    [](const ExtenDeckSDK::EventBase* event, void* ctx) {
+        ((Event::ETextureReadyToBind*)event)->texture->bind_to_context();
+    }, nullptr, ExtenDeckSDK::DxECEPSubscriberThread); // FIXME: THIS SHIT WILL KICK THE BUCKET IF THE TEXTURE IS DESTROYED!!!!!!!
 
     const uint64_t uuid = find_uuid();
-    dxstore.insert_client(uuid, NX_INVALID_SOCKET);
+    dxstore.clientManager.insert_client(uuid, NX_INVALID_SOCKET);
     dxstore.set_selected_uuid(uuid);
 
     thread t_client(begin_client_loop);
@@ -133,5 +93,8 @@ int start_client_sequence() {
 
     t_client.join();
 
+    dxstore.clientManager.disconnect_client(uuid, dxstore.clientManager.retrieve_client(uuid)->disconnectReason);
+
     return 0;
+}
 }

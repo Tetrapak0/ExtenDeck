@@ -10,7 +10,8 @@
 #include "GUI/DxWindow.hpp"
 #include "GUI/Texture.hpp"
 
-#include "../../external/stb/stb_image.h"
+#include "stb/stb_image.h"
+#include "GLFW/include/glfw3native.h"
 
 extern "C" {
     #include "../../resources/icon.h"

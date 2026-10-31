@@ -2,96 +2,79 @@
 
 #define DX_INVALID_UUID 0
 
-#include <filesystem>
-#include <fstream>
 #include <mutex>
 #include <string>
 #include <vector>
 
-#include "../../external/jsonhpp/json.hpp"
-#include "../../external/Tetrapak0/NexusSockets.h"
+#include <jsonhpp/json.hpp>
 
 #include "Config/Profile.hpp"
-
-namespace fs = std::filesystem;
+#include "Networking/Connection.hpp"
 
 using std::mutex;
+using std::shared_ptr;
 using std::string;
 using std::unordered_map;
 using std::vector;
 
 using json = nlohmann::json;
 
-class Client {
-    friend class Deckastore;
+namespace ExtenDeck::Client {
+enum class ClientDisconnectReason {
+    ConnectionClosed,
+    DisconnectIssued
+};
 
+class Client {
     uint64_t m_uuid;
     string nickname;
-    json config;
+    json config{};
     string m_nickname = nickname;
-public:
-    socket_t socket = NX_INVALID_SOCKET;
-    int res = 1;
-    int send_res = 1;
-
-    int current_profile = 0;
-    vector<shared_ptr<Profile>> profiles;
-
     mutex lock;
-    
-    [[nodiscard]] uint64_t get_uuid() const;
+public:
+    ClientDisconnectReason disconnectReason = ClientDisconnectReason::ConnectionClosed;
+    uint64_t current_profile = 0;
+    std::unordered_map<uint64_t, Profile> profiles;
 
-    void set_nickname(const string& nickname);
-    [[nodiscard]] string get_nickname() const;
+    Networking::Connection connection;
+    void communicate();
 
-    [[nodiscard]] Profile& get_current_profile_ref();
+    int send(const ExtenDeckSDK::Message& msg, ExtenDeckSDK::PluginBase& sender);
+    bool isConnected() const;
+
+    uint64_t get_uuid() const;
+
+    void set_nickname(const string& nick);
+    const string& get_nickname() const;
+
+    Profile& getCurrentProfile();
 
     json& get_config();
-
     void create_config();
-
-    int configure();
-
     void write_config() const;
-
-    void update_config() const;
-    void update_config(Item* item) const;
+    void update_config();
 
     void draw_properties();
 
     Client() = delete;
     explicit Client(uint64_t uuid, socket_t socket);
-    // Client(const Client& other) :   m_uuid(other.m_uuid),
-    //                                 nickname(other.nickname),
-    //                                 config(other.config),
-    //                                 socket(other.socket),
-    //                                 current_profile(other.current_profile),
-    //                                 profiles(other.profiles) {}
-    // explicit Client(const Client* other) :  m_uuid(other->m_uuid),
-    //                                         nickname(other->nickname),
-    //                                         config(other->config),
-    //                                         socket(other->socket),
-    //                                         current_profile(other->current_profile),
-    //                                         profiles(other->profiles) {}
-    // Client(Client&& other) noexcept :   m_uuid(other.m_uuid),
-    //                                     nickname(std::move(other.nickname)),
-    //                                     config(std::move(other.config)),
-    //                                     socket(other.socket),
-    //                                     current_profile(other.current_profile),
-    //                                     profiles(std::move(other.profiles)) {}
-    // Client& operator=(const Client& other) {
-    //     if (this != &other) {
-    //         m_uuid = other.m_uuid;
-    //         nickname = other.nickname;
-    //         socket = other.socket;
-    //         config = other.config;
-    //         current_profile = other.current_profile;
-    //         profiles = other.profiles;
-    //     }
-    //     return *this;
-    // }
+    ~Client();
 };
 
+class ClientManager {
+    unordered_map<uint64_t, Client> clients;
+public:
+    std::mutex mutex;
+    Client* retrieve_client(uint64_t uuid);
+    bool client_exists(uint64_t uuid) const;
+    Client* insert_client(uint64_t uuid, socket_t socket);
+    void disconnect_client(uint64_t uuid, ClientDisconnectReason reason);
+    void request_disconnect(uint64_t uuid);
+    uint64_t getNumOfClients() const;
+    const unordered_map<uint64_t, Client>& getClientsMap();
+};
+
+int run();
 uint64_t construct_header(uint32_t msg_len, uint32_t type);
-int start_client_sequence();
 int client_gui_init();
+}

@@ -1,14 +1,15 @@
 #pragma once
 
-#include "../../external/Tetrapak0/NexusSockets.h"
+#include <Tetrapak0/NexusSockets.h>
 
-#include <mutex>
+#include <string>
 #include <vector>
 
-using std::mutex;
 using std::string;
 using std::vector;
 
+namespace ExtenDeck {
+namespace Networking {
 struct ServerInfo {
     string hostname;
     string username;
@@ -16,7 +17,14 @@ struct ServerInfo {
     uint16_t port;
     uint64_t last_ping;
     string full;
+    void print();
+    ServerInfo(string msg, uint64_t last_ping);
+    ServerInfo() = default;
+    bool operator==(const ServerInfo& other) const {
+        return full == other.full;
+    }
 };
+}
 /*
 struct ServerInfo {
     IPv4 ip;
@@ -34,9 +42,7 @@ struct ServerInfo {
     }
 };
 */
-
+namespace Client {
 void start_listening();
-
-extern mutex servers_lock;
-extern vector<ServerInfo> servers;
-extern int selected_server;
+}
+}

@@ -2,16 +2,11 @@
 
 #include <string>
 
-#ifndef _WIN32
-#define NFD_PORTAL
-#endif
-
-#include "../../external/NativeFileDialogs-Extended/include/nfd.hpp"
-#include "../../external/NativeFileDialogs-Extended/include/nfd_glfw3.h"
-
 using std::string;
 
-extern string nfd_open_image();
-extern string nfd_open_file();
-extern string nfd_open_exe();
-extern string nfd_open_dir();
+namespace ExtenDeck::Utilities {
+string nfd_open_image();
+string nfd_open_file();
+string nfd_open_exe();
+string nfd_open_dir();
+}

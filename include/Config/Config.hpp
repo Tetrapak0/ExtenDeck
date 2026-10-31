@@ -1,33 +1,21 @@
 #pragma once
 
 #ifdef _WIN32
-    #define _CRT_SECURE_NO_WARNINGS 1
     #define CFG_VAR "APPDATA"
-    #define CFG_REQ "Deckadence"
+    #define CFG_REQ "ExtenDeck"
     #define USR_VAR "USERNAME"
 #else
     #define CFG_VAR "HOME"
-    #define CFG_REQ ".config/Deckadence"
+    #define CFG_REQ ".config/ExtenDeck"
     #define USR_VAR "LOGNAME"
 #endif
 
+#include <cstdint>
 #include <filesystem>
-#include <mutex>
-#include <unordered_map>
-#include <vector>
-
-#include "Deckastore.hpp"
-
-#include "../../external/jsonhpp/json.hpp"
 
 namespace fs = std::filesystem;
-using json = nlohmann::json;
-using std::mutex;
-using std::string;
-using std::unordered_map;
-using std::vector;
 
-uint64_t generate_uuid();
-fs::path get_cfg_dir();
-int      check_config();
-int      run_oobe();
+namespace ExtenDeck {
+    uint64_t generate_uuid();
+    fs::path get_config_dir();
+}
