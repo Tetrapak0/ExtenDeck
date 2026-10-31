@@ -87,7 +87,8 @@ void drawConnectDialog(ServerSelectorData& ssd) {
                 int res = connect(sock, (sockaddr*)&hint, sizeof(hint));
                 if (res != NX_SOCKET_ERROR) {
                     uint64_t uuid = htonll(self->get_uuid());
-                    res = send(sock, &uuid, sizeof(uint64_t), 0);
+                    // thanks msvc for redundant cast
+                    res = send(sock, (const char*)&uuid, sizeof(uint64_t), 0);
                     if (res > 0) {
                         self->connection.~Connection();
                         new (&self->connection) Networking::Connection(sock);

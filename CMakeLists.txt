@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 include_directories(${CMAKE_CURRENT_LIST_DIR}/include)
 include_directories(${CMAKE_CURRENT_LIST_DIR}/external)
-#if (WIN32)
+#if (WIN32) # HACK:
 include_directories(${CMAKE_CURRENT_LIST_DIR}/external/freetype)
 #endif()
 
